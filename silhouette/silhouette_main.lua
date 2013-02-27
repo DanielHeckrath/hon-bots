@@ -131,8 +131,6 @@ function object:SkillBuild()
         if nSkill == 0 and unitSelf:GetAbility(nSkill):GetActualRemainingCooldownTime() == 0 then
             local nCurrentTime = HoN.GetGameTime()
             object.nLotusTime = nCurrentTime
-            BotEcho("Reseting Lotus Spawn time")
-            BotEcho("Current time: "..nCurrentTime.." - Lotus Respawn: "..object.nLotusTime)
         end
     end
 end
@@ -156,6 +154,8 @@ object.nLotusUp = 13
 object.nGrappleUp = 10 
 object.nSalvoUp = 7 
 object.nShadowUp = 20
+
+object.nSolvoApplied = 5
  
 -- These are bonus agression points that are applied to the bot upon successfully using a skill/item
 object.nLotusUse = 13
@@ -187,8 +187,6 @@ function object:oncombateventOverride(EventData)
         if EventData.InflictorName == "Ability_Silhouette1" then
             object.nLotusTime = nCurrentTime + 12000
             nAddBonus = nAddBonus + object.nLotusUse
-            BotEcho("Reseting Lotus Spawn time")
-            BotEcho("Current time: "..nCurrentTime.." - Lotus Respawn: "..object.nLotusTime)
         elseif EventData.InflictorName == "Ability_Silhouette2" then
             nAddBonus = nAddBonus + object.nGrappleUse
         elseif EventData.InflictorName == "Ability_Silhouette4" then
@@ -198,8 +196,6 @@ function object:oncombateventOverride(EventData)
         local nCooldownTime = abilLotus:GetActualRemainingCooldownTime()
             
         object.nLotusTime = nCurrentTime + nCooldownTime
-        BotEcho("Reseting Lotus Spawn time to death time")
-        BotEcho("Current time: "..nCurrentTime.." - Lotus Respawn: "..object.nLotusTime)
     end
  
    if nAddBonus > 0 then
@@ -239,6 +235,24 @@ end
 object.FindItemsOld = core.FindItems
 core.FindItems = funcFindItemsOverride
 
+object.tLotusVectors = {}
+function createLotusVectors()
+    -- body
+    object.tLotusVectors[1] = {
+        Vector3.Create(0,1)
+    }
+    object.tLotusVectors[2] = {
+        Vector3.Create(0,1), Vector3.Create(0,-1)
+    }
+    object.tLotusVectors[3] = {
+        Vector3.Create(0,1), Vector3.Create(-0.5,-0.866025403784439), Vector3.Create(-0.5,0.866025403784439)
+    }
+    object.tLotusVectors[4] = {
+        Vector3.Create(0,1), Vector3.Create(1,0), Vector3.Create(0,-1), Vector3.Create(-1,0)
+    }
+end
+createLotusVectors()
+
 ------------------------------------------------------
 --            customharassutility override          --
 -- change utility according to usable spells here   --
@@ -271,11 +285,27 @@ local function CustomHarassUtilityOverride(enemyHero) --how much to harrass, doe
     if skills.abilShadow:CanActivate() then
         nUtil = nUtil + object.nShadowUp
     end
+
+    if enemyHero:HasState("State_Silhouette_Ability3_Enemy") then
+        nUtil = nUtil + object.nSolvoApplied
+    end
  
     return nUtil -- no desire to attack AT ALL if 0.
 end
 -- assisgn custom Harrass function to the behaviourLib object
 behaviorLib.CustomHarassUtility = CustomHarassUtilityOverride  
+
+local function printLotusDebug(nLotusTime, nTimePassed, nDegreeTraveled, vecRotated, vecToward, nAngleBetween)
+    -- body
+    BotEcho("==================================================================")
+    BotEcho("Lotus Spawn Time: "..nLotusTime)
+    BotEcho("Seconds Passed: "..nTimePassed)
+    BotEcho("Degree Traveled: "..nDegreeTraveled)
+    BotEcho(format("Rotated Vector: (%f , %f)", vecRotated.x, vecRotated.y))
+    BotEcho(format("Direction Vector: (%f , %f)", vecToward.x, vecToward.y))
+    BotEcho("Angle Between: "..nAngleBetween)
+    BotEcho("==================================================================")
+end
 
 --------------------------------------------------------------
 --                    Harass Behavior                       --
@@ -314,6 +344,31 @@ local function HarassHeroExecuteOverride(botBrain)
     -- gets queued instead of instantly ordered
     local bActionTaken = false
 
+    if core.CanSeeUnit(botBrain, unitTarget) then
+        if nLastHarassUtility > object.nLotusThreshold then
+            if abilLotus:CanActivate() then
+                local nRangeSq = 1000 * 1000
+                local nCurrentTime = HoN.GetGameTime()
+
+                local nSecondsElapsed = (nCurrentTime - object.nLotusTime) / 1000
+                local nDegreeTraveled = nSecondsElapsed * 90
+
+                local vecToward = Vector3.Normalize(vecTargetPosition - vecMyPosition)
+
+                local tLotusVectors = object.tLotusVectors[abilLotus:GetLevel()]
+
+                for k,vecLotus in pairs(tLotusVectors) do
+                    local vecRotated = core.RotateVec2D(vecLotus, -nDegreeTraveled)
+                    local nAngle = core.RadToDeg(core.AngleBetween(vecToward, vecRotated))
+                    if nTargetDistanceSq < nRangeSq and nAngle < 7.0 then
+                        printLotusDebug(object.nLotusTime, nSecondsElapsed, nDegreeTraveled, vecRotated, vecToward, nAngle)
+                        core.OrderAbility(botBrain, abilLotus, true)
+                        break
+                    end
+                end
+            end
+        end
+    end
 
     
     if not bActionTaken then
