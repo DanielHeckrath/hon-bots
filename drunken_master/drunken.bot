@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bot
+    name="DrunkenBot"
+    description="Drunken Master Bot by tchackie"
+    heroname="Hero_DrunkenMaster"
+    rootlua="drunken_main.lua"
+    defaultplayername="DrunkenBot"
+    precachepath="/heroes/drunkenmaster/"
+/>
