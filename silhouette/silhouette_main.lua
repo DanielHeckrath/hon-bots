@@ -156,6 +156,7 @@ object.nSalvoUp = 7
 object.nShadowUp = 20
 
 object.nSolvoApplied = 5
+object.nSalvoActive = 20
  
 -- These are bonus agression points that are applied to the bot upon successfully using a skill/item
 object.nLotusUse = 13
@@ -253,6 +254,8 @@ function createLotusVectors()
 end
 createLotusVectors()
 
+object.vecCurrentTreePosition = nil
+
 ------------------------------------------------------
 --            customharassutility override          --
 -- change utility according to usable spells here   --
@@ -272,7 +275,7 @@ local function CustomHarassUtilityOverride(enemyHero) --how much to harrass, doe
     end
  
     --Tree Grapple up bonus
-    if skills.abilGrapple:CanActivate() then
+    if skills.abilGrapple:CanActivate() or skills.abilGo:CanActivate() or skills.abilPull:CanActivate() then
         nUtil = nUtil + object.nGrappleUp
     end
 
@@ -284,6 +287,10 @@ local function CustomHarassUtilityOverride(enemyHero) --how much to harrass, doe
     --Tree Grapple up bonus
     if skills.abilShadow:CanActivate() then
         nUtil = nUtil + object.nShadowUp
+    end
+
+    if unitSelf:HasState("State_Silhouette_Ability3") then
+        nUtil = nUtil + object.nSalvoActive
     end
 
     if enemyHero:HasState("State_Silhouette_Ability3_Enemy") then
@@ -328,6 +335,7 @@ local function HarassHeroExecuteOverride(botBrain)
     --Positioning and distance info
     local vecMyPosition = unitSelf:GetPosition()
     local vecTargetPosition = unitTarget:GetPosition()
+    local vecToward = Vector3.Normalize(vecTargetPosition - vecMyPosition)
     local nTargetDistanceSq = Vector3.Distance2DSq(vecMyPosition, vecTargetPosition)
     
     local nLastHarassUtility = behaviorLib.lastHarassUtil
@@ -335,7 +343,9 @@ local function HarassHeroExecuteOverride(botBrain)
     --Skills
     local abilLotus = skills.abilLotus
     local abilGrapple = skills.abilGrapple
-    local abilShadow = abilShadow
+    local abilShadow = skills.abilShadow
+    local abilPull = skills.abilPull
+    local abilGo = skills.abilGo
     
     if bDebugHarassUtility then BotEcho("Silhouette HarassHero at "..nLastHarassUtility) end
 
@@ -345,7 +355,7 @@ local function HarassHeroExecuteOverride(botBrain)
     local bActionTaken = false
 
     if core.CanSeeUnit(botBrain, unitTarget) then
-        if nLastHarassUtility > object.nLotusThreshold then
+        if nLastHarassUtility > object.nLotusThreshold and not bActionTaken then
             if abilLotus:CanActivate() then
                 local nRangeSq = 1000 * 1000
                 local nCurrentTime = HoN.GetGameTime()
@@ -353,19 +363,86 @@ local function HarassHeroExecuteOverride(botBrain)
                 local nSecondsElapsed = (nCurrentTime - object.nLotusTime) / 1000
                 local nDegreeTraveled = nSecondsElapsed * 90
 
-                local vecToward = Vector3.Normalize(vecTargetPosition - vecMyPosition)
-
                 local tLotusVectors = object.tLotusVectors[abilLotus:GetLevel()]
 
+                -- go to all vectors we have for the current level and compare their direction to our direction towards the target
                 for k,vecLotus in pairs(tLotusVectors) do
                     local vecRotated = core.RotateVec2D(vecLotus, -nDegreeTraveled)
                     local nAngle = core.RadToDeg(core.AngleBetween(vecToward, vecRotated))
                     if nTargetDistanceSq < nRangeSq and nAngle < 7.0 then
+                        -- fire of death lotus if the angle between the blade and the direction towards the target is < 7°
+                        -- while the maximum angle to hit a target at 1000 units away would be around 6° but that does not
+                        -- include the touch radius each hero has.
                         printLotusDebug(object.nLotusTime, nSecondsElapsed, nDegreeTraveled, vecRotated, vecToward, nAngle)
-                        core.OrderAbility(botBrain, abilLotus, true)
+                        bActionTaken = core.OrderAbility(botBrain, abilLotus, true)
                         break
                     end
                 end
+            end
+        end
+
+        if nLastHarassUtility > object.nGrappleThreshold and not bActionTaken then
+            local funcRadToDeg = core.RadToDeg
+            local funcAngleBetween = core.AngleBetween
+
+            if abilGrapple:CanActivate() then
+                local bestTree = nil
+                local vecBestPosition = nil
+
+                -- this will get us all trees in a 1000 units radius. 
+                -- while grapple can target up to 1200 units, it might be better to have a little buffer
+                core.UpdateLocalTrees()
+                local tTrees = core.localTrees
+                for key, tree in pairs(tTrees) do
+                    if bestTree == nil then
+                        bestTree = tree
+                        vecBestPosition = bestTree:GetPosition()
+                    else
+                        local vecTreePosition = tree:GetPosition()
+                        local nBestAngle = abs(funcRadToDeg(funcAngleBetween(vecBestPosition - vecMyPosition, vecToward))) 
+                        local nCurrentAngle = abs(funcRadToDeg(funcAngleBetween(vecTreePosition - vecMyPosition, vecToward))) 
+                    
+                        -- check if the angle to current tree is smaller than the angle to best tree
+                        if nCurrentAngle < nBestAngle then
+                            bestTree = tree
+                            vecBestPosition = vecTreePosition
+                        end
+                    end
+                end
+
+                if bestTree ~= nil then
+                    local nBestAngle = abs(funcRadToDeg(funcAngleBetween(vecBestPosition - vecMyPosition, vecToward))) 
+                    if nBestAngle < 60 then
+                        object.vecCurrentTreePosition = vecBestPosition
+                        bActionTaken = core.OrderAbilityPosition(botBrain, abilGrapple, vecBestPosition, false)
+                    end
+                end
+            end
+
+            if abilPull:CanActivate() or abilGo:CanActivate() then
+                local vecTreeToSelf = Vector3.Normalize(vecMyPosition - object.vecCurrentTreePosition)
+                local vecTreeToEnemy = Vector3.Normalize(vecTargetPosition - object.vecCurrentTreePosition)
+                local nAngleBetween = abs(funcRadToDeg(funcAngleBetween(vecTreeToSelf, vecTreeToEnemy)))
+                if nAngleBetween < 7.0 then
+                    local nTreeDistanceSq = Vector3.Distance2DSq(object.vecCurrentTreePosition, vecTargetPosition)
+                    if nTreeDistanceSq < nTargetDistanceSq then
+                        -- Tree is closer to target than we are, use sky dance
+                        bActionTaken = core.OrderAbility(botBrain, abilGo, true)
+                    else
+                        -- We are closer to target than the tree, use log bola
+                        bActionTaken = core.OrderAbility(botBrain, abilPull, true)
+                    end
+                else
+                    if not unitSelf:IsAttackReady() then
+                        -- try to move into position for skydance / log bola
+                        -- we need the non squared distance here, to calculate a point that has the enemy between it and the tree
+                        local nDistance = Vector3.Distance2D(object.vecCurrentTreePosition, vecTargetPosition)
+                        nDistance = max(nDistance + 200, 1700)
+                        local vecDesiredPos = vecTreeToEnemy * nDistance
+                        bActionTaken = core.OrderMoveToPosAndHoldClamp(botBrain, unitSelf, vecDesiredPos, false)
+                    end
+                end
+                --BotEcho("Can use log bola or sky dance")
             end
         end
     end
@@ -551,4 +628,4 @@ end
 object.AttackCreepsExecuteOld = behaviorLib.HarassHeroBehavior["Execute"]
 behaviorLib.AttackCreepsBehavior["Execute"] = AttackCreepsExecuteOverride
 
-BotEcho('finished loading soulreaper_main')
+BotEcho('finished loading silhouette_main')
