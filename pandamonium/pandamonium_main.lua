@@ -197,6 +197,7 @@ function object:oncombateventOverride(EventData)
             nAddBonus = nAddBonus + object.nCannonballUse
         elseif EventData.InflictorName == "Ability_Panda4" then
             nAddBonus = nAddBonus + object.nSmashUse
+            object.SmashPauseTime = HoN.GetGameTime() + 500
         end
     end
  
@@ -257,6 +258,7 @@ end
 behaviorLib.CustomHarassUtility = CustomHarassUtilityOverride  
 
 object.nFlickAirTime = HoN.GetGameTime()
+object.SmashPauseTime = HoN.GetGameTime()
 
 --------------------------------------------------------------
 --                    Harass Behavior                       --
@@ -299,9 +301,13 @@ local function HarassHeroExecuteOverride(botBrain)
     
     --- Insert abilities code here, set bActionTaken to true 
     --- if an ability command has been given successfully
+
+    if unitSelf:HasState("State_Panda_Ability4_Self") or HoN.GetGameTime() > object.SmashPauseTime then
+        bActionTaken = true
+    end
     
     --since we are using an old pointer, ensure we can still see the target for entity targeting
-    if core.CanSeeUnit(botBrain, unitTarget) and not unitSelf:HasState("State_Panda_Ability4_Self") then
+    if core.CanSeeUnit(botBrain, unitTarget) and not unitSelf:HasState("State_Panda_Ability4_Self") and HoN.GetGameTime() > object.SmashPauseTime then
         -- Flick
         if not bActionTaken and nLastHarassUtility > botBrain.nFlickThreshold then
             local abilFlick = skills.abilFlick
