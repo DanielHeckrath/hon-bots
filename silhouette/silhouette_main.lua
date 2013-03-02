@@ -43,6 +43,7 @@ runfile "bots/botbraincore.lua"
 runfile "bots/eventslib.lua"
 runfile "bots/metadata.lua"
 runfile "bots/behaviorlib.lua"
+runfile "bots/illusions.lua"
 
 local core, eventsLib, behaviorLib, metadata, skills = object.core, object.eventsLib, object.behaviorLib, object.metadata, object.skills
 
@@ -121,17 +122,27 @@ function object:SkillBuild()
     
     local nLev = unitSelf:GetLevel()
     local nLevPts = unitSelf:GetAbilityPointsAvailable()
-    --BotEcho(tostring(nLev + nLevPts))
-    for i = nLev, nLev+nLevPts do
+    local i = nLev
+    BotEcho("Start: "..tostring(nLev))
+    BotEcho("End: "..tostring(nLev + nLevPts))
+    while i < nLev + nLevPts do
         local nSkill = tSkills[i]
         if nSkill == nil then nSkill = 4 end
+
+        local currentAbil = unitSelf:GetAbility(nSkill)
         
-        unitSelf:GetAbility(nSkill):LevelUp()
+        currentAbil:LevelUp()
+
+        BotEcho("Skill: "..currentAbil:GetTypeName())
+        BotEcho("Skill #: "..nSkill)
 
         if nSkill == 0 and unitSelf:GetAbility(nSkill):GetActualRemainingCooldownTime() == 0 then
+            BotEcho("Leveled Up Death Lotus - Reseting Spawn time")
             local nCurrentTime = HoN.GetGameTime()
             object.nLotusTime = nCurrentTime
         end
+
+        i = i + 1
     end
 end
 
@@ -144,18 +155,55 @@ end
 -- @return: none
 function object:onthinkOverride(tGameVariables)
     self:onthinkOld(tGameVariables)
+
+    local nRangeSq = 1000 * 1000
+    local nCurrentTime = HoN.GetGameTime()
+
+    local nSecondsElapsed = (nCurrentTime - object.nLotusTime) / 1000
+    local nDegreeTraveled = nSecondsElapsed * 90
+    local abilLotus = skills.abilLotus
+    local tLotusVectors = object.tLotusVectors[abilLotus:GetLevel()]
+
+    --[[
+    if abilLotus:CanActivate() then
+        local vecMyPosition = core.unitSelf:GetPosition()
+        -- go to all vectors we have for the current level and compare their direction to our direction towards the target
+        for k,vecLotus in pairs(tLotusVectors) do
+            local vecRotated = core.RotateVec2D(vecLotus, -nDegreeTraveled)
+            core.DrawDebugArrow(vecMyPosition, vecMyPosition + vecRotated * 200, 'blue')
+        end
+    end
+    ]]
+    if core.unitSelf:HasState("State_Silhouette_Ability4_On") then
+        if object.unitShadowIllusion == nil or not object.unitShadowIllusion:IsValid() or not object.unitShadowIllusion:IsAlive() then
+            local unitShadowIllusion = nil
+            for k,illusion in pairs(core.ownedIllusions) do
+                if illusion:HasState("State_Silhouette_Ability4_Shadow") then
+                    if illusion:IsValid() and illusion:IsAlive() then
+                        unitShadowIllusion = illusion
+                        break
+                    end
+                end
+            end
+            object.unitShadowIllusion = unitShadowIllusion
+        end
+    else
+        object.unitShadowIllusion = nil
+    end
 end
 object.onthinkOld = object.onthink
 object.onthink  = object.onthinkOverride
 
+-- this variable holds a reference to our shadow illusion
+object.unitShadowIllusion = nil
 
 -- These are bonus agression points if a skill/item is available for use
 object.nLotusUp = 13
 object.nGrappleUp = 10 
-object.nSalvoUp = 7 
+object.nSalvoUp = 5 
 object.nShadowUp = 20
 
-object.nSolvoApplied = 5
+object.nSolvoApplied = 3
 object.nSalvoActive = 20
  
 -- These are bonus agression points that are applied to the bot upon successfully using a skill/item
@@ -192,6 +240,23 @@ function object:oncombateventOverride(EventData)
             nAddBonus = nAddBonus + object.nGrappleUse
         elseif EventData.InflictorName == "Ability_Silhouette4" then
             nAddBonus = nAddBonus + object.nShadowUse
+            self:trackIllusions()
+            if core.unitSelf:HasState("State_Silhouette_Ability4_On") then
+                if object.unitShadowIllusion == nil or not object.unitShadowIllusion:IsValid() or not object.unitShadowIllusion:IsAlive() then
+                    local unitShadowIllusion = nil
+                    for k,illusion in pairs(core.ownedIllusions) do
+                        if illusion:HasState("State_Silhouette_Ability4_Shadow") then
+                            if illusion:IsValid() and illusion:IsAlive() then
+                                unitShadowIllusion = illusion
+                                break
+                            end
+                        end
+                    end
+                    object.unitShadowIllusion = unitShadowIllusion
+                end
+            else
+                object.unitShadowIllusion = nil
+            end
         end
     elseif EventData.Type == "Respawn" then
         local nCooldownTime = abilLotus:GetActualRemainingCooldownTime()
@@ -246,7 +311,7 @@ function createLotusVectors()
         Vector3.Create(0,1), Vector3.Create(0,-1)
     }
     object.tLotusVectors[3] = {
-        Vector3.Create(0,1), Vector3.Create(-0.5,-0.866025403784439), Vector3.Create(-0.5,0.866025403784439)
+        Vector3.Create(0,1) , core.RotateVec2D(Vector3.Create(1,0), 210), core.RotateVec2D(Vector3.Create(1,0), 330)
     }
     object.tLotusVectors[4] = {
         Vector3.Create(0,1), Vector3.Create(1,0), Vector3.Create(0,-1), Vector3.Create(-1,0)
@@ -337,8 +402,10 @@ local function HarassHeroExecuteOverride(botBrain)
     local vecTargetPosition = unitTarget:GetPosition()
     local vecToward = Vector3.Normalize(vecTargetPosition - vecMyPosition)
     local nTargetDistanceSq = Vector3.Distance2DSq(vecMyPosition, vecTargetPosition)
-    
+    local nAttackRangeSq = core.GetAbsoluteAttackRangeToUnit(unitSelf, unitTarget, true) 
     local nLastHarassUtility = behaviorLib.lastHarassUtil
+
+    core.DrawDebugArrow(vecMyPosition, vecMyPosition + vecToward * 200, 'green')
     
     --Skills
     local abilLotus = skills.abilLotus
@@ -346,8 +413,12 @@ local function HarassHeroExecuteOverride(botBrain)
     local abilShadow = skills.abilShadow
     local abilPull = skills.abilPull
     local abilGo = skills.abilGo
+    local abilSalvo = skills.abilSalvo
     
     if bDebugHarassUtility then BotEcho("Silhouette HarassHero at "..nLastHarassUtility) end
+
+    local funcRadToDeg = core.RadToDeg
+    local funcAngleBetween = core.AngleBetween
 
     --Used to keep track of whether something has been used
     -- If so, any other action that would have taken place
@@ -355,36 +426,43 @@ local function HarassHeroExecuteOverride(botBrain)
     local bActionTaken = false
 
     if core.CanSeeUnit(botBrain, unitTarget) then
+        if unitSelf:HasState("State_Silhouette_Ability4_On") then
+            local unitShadowIllusion = object.unitShadowIllusion
+            if unitShadowIllusion ~= nil and unitShadowIllusion:IsValid() and unitShadowIllusion:IsAlive() then
+                core.OrderAttack(botBrain, unitShadowIllusion, unitTarget, false)
+            end
+        end
+
         if nLastHarassUtility > object.nLotusThreshold and not bActionTaken then
             if abilLotus:CanActivate() then
-                local nRangeSq = 1000 * 1000
-                local nCurrentTime = HoN.GetGameTime()
+                local nLotusLevel = abilLotus:GetLevel()
+                local nTargetMagicResistance = unitTarget:GetMagicResistance()
+                local nLotusDamage = (40 + nLotusLevel * 60) * (1 - nTargetMagicResistance)
 
-                local nSecondsElapsed = (nCurrentTime - object.nLotusTime) / 1000
-                local nDegreeTraveled = nSecondsElapsed * 90
+                if nLotusDamage > unitTarget:GetHealth() or (abilSalvo:GetActualRemainingCooldownTime() == 0 and nAttackRangeSq < nTargetDistanceSq) then
+                    local nRangeSq = 1000 * 1000
+                    local nCurrentTime = HoN.GetGameTime()
 
-                local tLotusVectors = object.tLotusVectors[abilLotus:GetLevel()]
+                    local nSecondsElapsed = (nCurrentTime - object.nLotusTime) / 1000
+                    local nDegreeTraveled = nSecondsElapsed * 90
 
-                -- go to all vectors we have for the current level and compare their direction to our direction towards the target
-                for k,vecLotus in pairs(tLotusVectors) do
-                    local vecRotated = core.RotateVec2D(vecLotus, -nDegreeTraveled)
-                    local nAngle = core.RadToDeg(core.AngleBetween(vecToward, vecRotated))
-                    if nTargetDistanceSq < nRangeSq and nAngle < 7.0 then
-                        -- fire of death lotus if the angle between the blade and the direction towards the target is < 7°
-                        -- while the maximum angle to hit a target at 1000 units away would be around 6° but that does not
-                        -- include the touch radius each hero has.
-                        printLotusDebug(object.nLotusTime, nSecondsElapsed, nDegreeTraveled, vecRotated, vecToward, nAngle)
-                        bActionTaken = core.OrderAbility(botBrain, abilLotus, true)
-                        break
+                    local tLotusVectors = object.tLotusVectors[abilLotus:GetLevel()]
+
+                    -- go to all vectors we have for the current level and compare their direction to our direction towards the target
+                    for k,vecLotus in pairs(tLotusVectors) do
+                        local vecRotated = core.RotateVec2D(vecLotus, -nDegreeTraveled)
+                        local nAngle = core.RadToDeg(core.AngleBetween(vecToward, vecRotated))
+                        if nTargetDistanceSq < nRangeSq and nAngle < 6.0 then
+                            printLotusDebug(object.nLotusTime, nSecondsElapsed, nDegreeTraveled, vecRotated, vecToward, nAngle)
+                            bActionTaken = core.OrderAbility(botBrain, abilLotus, true)
+                            break
+                        end
                     end
                 end
             end
         end
 
         if nLastHarassUtility > object.nGrappleThreshold and not bActionTaken then
-            local funcRadToDeg = core.RadToDeg
-            local funcAngleBetween = core.AngleBetween
-
             if abilGrapple:CanActivate() then
                 local bestTree = nil
                 local vecBestPosition = nil
@@ -399,11 +477,11 @@ local function HarassHeroExecuteOverride(botBrain)
                         vecBestPosition = bestTree:GetPosition()
                     else
                         local vecTreePosition = tree:GetPosition()
-                        local nBestAngle = abs(funcRadToDeg(funcAngleBetween(vecBestPosition - vecMyPosition, vecToward))) 
-                        local nCurrentAngle = abs(funcRadToDeg(funcAngleBetween(vecTreePosition - vecMyPosition, vecToward))) 
-                    
+                        local nBestAngle = abs(funcRadToDeg(funcAngleBetween(vecBestPosition - vecMyPosition, vecBestPosition - vecTargetPosition))) 
+                        local nCurrentAngle = abs(funcRadToDeg(funcAngleBetween(vecTreePosition - vecMyPosition, vecBestPosition - vecTargetPosition))) 
+                        local nAngleTowards = abs(funcRadToDeg(funcAngleBetween(vecTreePosition - vecMyPosition, vecToward))) 
                         -- check if the angle to current tree is smaller than the angle to best tree
-                        if nCurrentAngle < nBestAngle then
+                        if nCurrentAngle < nBestAngle and nAngleTowards < 45 then
                             bestTree = tree
                             vecBestPosition = vecTreePosition
                         end
@@ -411,14 +489,31 @@ local function HarassHeroExecuteOverride(botBrain)
                 end
 
                 if bestTree ~= nil then
-                    local nBestAngle = abs(funcRadToDeg(funcAngleBetween(vecBestPosition - vecMyPosition, vecToward))) 
-                    if nBestAngle < 60 then
+                    local nBestAngle = abs(funcRadToDeg(funcAngleBetween(vecBestPosition - vecMyPosition, vecBestPosition - vecTargetPosition))) 
+                    local nAngleTowards = abs(funcRadToDeg(funcAngleBetween(vecBestPosition - vecMyPosition, vecToward))) 
+                    if nBestAngle < 45 and nAngleTowards < 45 then
                         object.vecCurrentTreePosition = vecBestPosition
                         bActionTaken = core.OrderAbilityPosition(botBrain, abilGrapple, vecBestPosition, false)
                     end
                 end
             end
+        end
 
+        if nLastHarassUtility > object.nShadowThreshold and not bActionTaken then
+            if abilShadow:CanActivate() then
+                if nAttackRangeSq < nTargetDistanceSq then
+                    bActionTaken = core.OrderAbility(botBrain, abilShadow, true)
+                else
+                    if not unitSelf:IsAttackReady() then
+                        core.DrawXPosition(vecTargetPosition, 'teal')
+                        core.OrderMoveToPosClamp(botBrain, unitSelf, vecTargetPosition, false)
+                        bActionTaken = true
+                    end
+                end
+            end
+        end
+
+        if not bActionTaken then
             if abilPull:CanActivate() or abilGo:CanActivate() then
                 local vecTreeToSelf = Vector3.Normalize(vecMyPosition - object.vecCurrentTreePosition)
                 local vecTreeToEnemy = Vector3.Normalize(vecTargetPosition - object.vecCurrentTreePosition)
@@ -439,6 +534,7 @@ local function HarassHeroExecuteOverride(botBrain)
                         local nDistance = Vector3.Distance2D(object.vecCurrentTreePosition, vecTargetPosition)
                         nDistance = max(nDistance + 200, 1700)
                         local vecDesiredPos = vecTreeToEnemy * nDistance
+                        core.DrawXPosition(vecDesiredPos, 'teal')
                         bActionTaken = core.OrderMoveToPosAndHoldClamp(botBrain, unitSelf, vecDesiredPos, false)
                     end
                 end
@@ -462,11 +558,14 @@ function behaviorLib.GetCreepAttackTarget(botBrain, unitEnemyCreep, unitAllyCree
 
     --Get info about self
     local unitSelf = core.unitSelf
+
     local nDamageMin = unitSelf:GetFinalAttackDamageMin()
     local vecSelfPosition = unitSelf:GetPosition()
     local nProjectileSpeed = unitSelf:GetAttackProjectileSpeed()
 
     if unitEnemyCreep and core.CanSeeUnit(botBrain, unitEnemyCreep) then
+        local nTargetPhysResistance = unitEnemyCreep:GetPhysicalResistance()
+        nDamageMin = nDamageMin * (1 - nTargetPhysResistance)
         local nTargetHealth = unitEnemyCreep:GetHealth()
         local tNearbyAllyCreeps = core.localUnits['AllyCreeps']
         local tNearbyAllyTowers = core.localUnits['AllyTowers']
@@ -481,7 +580,7 @@ function behaviorLib.GetCreepAttackTarget(botBrain, unitEnemyCreep, unitAllyCree
         for i, unitCreep in pairs(tNearbyAllyCreeps) do
             if unitCreep:GetAttackTarget() == unitEnemyCreep then
                 local nCreepAttacks = 1 + math.floor(unitCreep:GetAttackSpeed() * nProjectileTravelTime)
-                nExpectedCreepDamage = nExpectedCreepDamage + unitCreep:GetFinalAttackDamageMin() * nCreepAttacks
+                nExpectedCreepDamage = nExpectedCreepDamage + (unitCreep:GetFinalAttackDamageMin() * nCreepAttacks) * (1 - nTargetPhysResistance)
             end
         end
 
@@ -489,7 +588,7 @@ function behaviorLib.GetCreepAttackTarget(botBrain, unitEnemyCreep, unitAllyCree
         for i, unitTower in pairs(tNearbyAllyTowers) do
             if unitTower:GetAttackTarget() == unitEnemyCreep then
                 local nTowerAttacks = 1 + math.floor(unitTower:GetAttackSpeed() * nProjectileTravelTime)
-                nExpectedTowerDamage = nExpectedTowerDamage + unitTower:GetFinalAttackDamageMin() * nTowerAttacks
+                nExpectedTowerDamage = nExpectedTowerDamage + (unitTower:GetFinalAttackDamageMin() * nTowerAttacks) * (1 - nTargetPhysResistance)
             end
         end
         
@@ -503,6 +602,8 @@ function behaviorLib.GetCreepAttackTarget(botBrain, unitEnemyCreep, unitAllyCree
     end
 
     if unitAllyCreep then
+        local nTargetPhysResistance = unitAllyCreep:GetPhysicalResistance()
+        nDamageMin = nDamageMin * (1 - nTargetPhysResistance)
         local nTargetHealth = unitAllyCreep:GetHealth()
         local tNearbyEnemyCreeps = core.localUnits['EnemyCreeps']
         local tNearbyEnemyTowers = core.localUnits['EnemyTowers']
@@ -517,7 +618,7 @@ function behaviorLib.GetCreepAttackTarget(botBrain, unitEnemyCreep, unitAllyCree
         for i, unitCreep in pairs(tNearbyEnemyCreeps) do
             if unitCreep:GetAttackTarget() == unitAllyCreep then
                 local nCreepAttacks = 1 + math.floor(unitCreep:GetAttackSpeed() * nProjectileTravelTime)
-                nExpectedCreepDamage = nExpectedCreepDamage + unitCreep:GetFinalAttackDamageMin() * nCreepAttacks
+                nExpectedCreepDamage = nExpectedCreepDamage + (unitCreep:GetFinalAttackDamageMin() * nCreepAttacks) * (1 - nTargetPhysResistance)
             end
         end
 
@@ -525,7 +626,7 @@ function behaviorLib.GetCreepAttackTarget(botBrain, unitEnemyCreep, unitAllyCree
         for i, unitTower in pairs(tNearbyEnemyTowers) do
             if unitTower:GetAttackTarget() == unitAllyCreep then
                 local nTowerAttacks = 1 + math.floor(unitTower:GetAttackSpeed() * nProjectileTravelTime)
-                nExpectedTowerDamage = nExpectedTowerDamage + unitTower:GetFinalAttackDamageMin() * nTowerAttacks
+                nExpectedTowerDamage = nExpectedTowerDamage + (unitTower:GetFinalAttackDamageMin() * nTowerAttacks) * (1 - nTargetPhysResistance)
             end
         end
         
@@ -567,6 +668,8 @@ function AttackCreepsExecuteOverride(botBrain)
         local nAttackRangeSq = core.GetAbsoluteAttackRangeToUnit(unitSelf, currentTarget, true)       
         local nTargetHealth = unitCreepTarget:GetHealth()
         local nDamageMin = unitSelf:GetFinalAttackDamageMin()    
+        local nTargetPhysResistance = unitCreepTarget:GetPhysicalResistance()
+        nDamageMin = nDamageMin * (1 - nTargetPhysResistance)
 
         --Get projectile info
         local nProjectileSpeed = unitSelf:GetAttackProjectileSpeed() 
@@ -592,7 +695,7 @@ function AttackCreepsExecuteOverride(botBrain)
         for i, unitCreep in pairs(tNearbyAttackingCreeps) do
             if unitCreep:GetAttackTarget() == unitCreepTarget then
                 local nCreepAttacks = 1 + math.floor(unitCreep:GetAttackSpeed() * nProjectileTravelTime)
-                nExpectedCreepDamage = nExpectedCreepDamage + unitCreep:GetFinalAttackDamageMin() * nCreepAttacks
+                nExpectedCreepDamage = nExpectedCreepDamage + (unitCreep:GetFinalAttackDamageMin() * nCreepAttacks) * (1 - nTargetPhysResistance)
             end
         end
     
@@ -600,7 +703,7 @@ function AttackCreepsExecuteOverride(botBrain)
         for i, unitTower in pairs(tNearbyAttackingTowers) do
             if unitTower:GetAttackTarget() == unitCreepTarget then
                 local nTowerAttacks = 1 + math.floor(unitTower:GetAttackSpeed() * nProjectileTravelTime)
-                nExpectedTowerDamage = nExpectedTowerDamage + unitTower:GetFinalAttackDamageMin() * nTowerAttacks
+                nExpectedTowerDamage = nExpectedTowerDamage + (unitTower:GetFinalAttackDamageMin() * nTowerAttacks) * (1 - nTargetPhysResistance)
             end
         end
 
